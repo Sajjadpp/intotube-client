@@ -3,7 +3,7 @@ import { useAuth } from "../context/AuthContext";
 import { getAccessToken } from "../service/AuthService";
 
 
-export const currentBaseUrl = "http://10.150.120.181:4000";
+export const currentBaseUrl = "https://infotube-server.onrender.com/";
 
 let baseURL =`${currentBaseUrl}/api`
 

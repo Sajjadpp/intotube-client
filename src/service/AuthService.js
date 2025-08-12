@@ -1,3 +1,4 @@
+import { currentBaseUrl } from "../axios/AxiosInstance";
 
 
 let accessToken = null;
@@ -11,7 +12,7 @@ export const getAccessToken = () => accessToken;
 
 export const getRefreshToken = async() =>{
     try{
-        let response = await fetch('localhost:4000/api/auth/refresh',{
+        let response = await fetch(`${currentBaseUrl}/api/auth/refresh`,{
             credentials: 'include'
         });
         let data = response.json();

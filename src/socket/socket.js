@@ -1,4 +1,5 @@
 import { io } from "socket.io-client";
+import { currentBaseUrl } from "../axios/AxiosInstance";
 
 let socket = null;
 
@@ -9,7 +10,7 @@ export const connectSocket = (userId) => {
     socket = null;
   }
 
-  socket = io("http://10.150.120.181:4000", {
+  socket = io(currentBaseUrl, {
     query: { userId },
     transports: ['websocket'],
     autoConnect: true,

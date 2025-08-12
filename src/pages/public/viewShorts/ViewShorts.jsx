@@ -103,7 +103,7 @@ const ShortsView = () => {
       navigator.share({
         title: short.title,
         text: short.description,
-        url: `http://localhost:5173/shorts/${short._id}`
+        url: `/shorts/${short._id}`
       }).catch((error) => toast.error('try again later'))
     }
   }
