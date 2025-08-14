@@ -49,8 +49,9 @@ const LiveViewerPage = () => {
 
   // Join stream when socket is ready
   useEffect(() => {
+    console.log('user trying to join the live')
     if (!isSocketReady || !user || !streamerId) return;
-    
+    console.log('user joined to the live')
     setStreamEnded(false);
     socket.emit('viewer-join', {
       from: user._id,
