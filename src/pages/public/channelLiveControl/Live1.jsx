@@ -84,7 +84,7 @@ const LiveStreamerPage = () => {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           {
-            urls: 'relay1.expressturn.com:3480',
+            urls: 'turn:relay1.expressturn.com:3478',
             username: '000000002070527019',
             credential: 'CZ1M3MvZgZaGiPoVqYpNHeFnHWc='
           }
