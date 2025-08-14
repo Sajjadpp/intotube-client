@@ -1,3 +1,6 @@
+
+
+
 import React, { useEffect, useRef, useState } from 'react';
 import { connectSocket, getSocket } from '../../../socket/socket';
 import { useAuth } from '../../../context/AuthContext';
@@ -15,16 +18,20 @@ const LiveViewerPage = () => {
   const [newComment, setNewComment] = useState('');
   const [isMuted, setIsMuted] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [streamEnded, setStreamEnded] = useState(true);
+  const [streamData, setStreamData] = useState(0);
+  
   const peer = useRef(null);
   const localVideoRef = useRef();
   const remoteVideoRef = useRef();
   const chatContainerRef = useRef();
+  const processingOffer = useRef(false);
+  
   const { user } = useAuth();
   const navigate = useNavigate();
   const { streamerId } = useParams();
   const socket = getSocket();
-  const [streamEnded, setStreamEnded] = useState(true)
-  const [streamData, setStreamData] = useState(0);
+
   // Authentication check
   useEffect(() => {
     if (user === 0) return;
@@ -34,44 +41,126 @@ const LiveViewerPage = () => {
     }
   }, [user, navigate]);
 
-  useEffect(() => {
-    if (!isSocketReady) {
-        console.log('Waiting for socket connection...');
-        return;
-    }
-
-    // Add this debug log
-    console.log('Emitting viewer-join to server', {
-        from: user._id,
-        to: streamerId
-    });
-    setStreamEnded(false)
-    socket.emit('viewer-join', {
-        from: user._id,
-        to: streamerId
-    });
-  }, [isSocketReady, user, streamerId]);
-
   // Socket connection check
   useEffect(() => {
     if (!socket) return;
     setIsSocketReady(true);
   }, [socket]);
 
-  // Fetch streamer info (mock function - replace with actual API call)
-  const fetchStreamerInfo = async () => {
-    // In a real app, you would fetch this from your backend
-    return {
-      username: 'StreamerName',
-      avatar: 'https://randomuser.me/api/portraits/men/1.jpg',
-      title: 'Awesome Live Stream',
-      description: 'Join me for this amazing live session!'
+  // Join stream when socket is ready
+  useEffect(() => {
+    if (!isSocketReady || !user || !streamerId) return;
+    
+    setStreamEnded(false);
+    socket.emit('viewer-join', {
+      from: user._id,
+      to: streamerId
+    });
+  }, [isSocketReady, user, streamerId]);
+
+  // Main WebRTC and socket logic
+  useEffect(() => {
+    if (!isSocketReady || !user || !streamerId) return;
+
+    const handleSignal = async ({ from, type, sdp, candidate }) => {
+      if (type === 'offer') {
+        if (processingOffer.current) {
+          console.log('Already processing an offer, ignoring duplicate');
+          return;
+        }
+        
+        processingOffer.current = true;
+        console.log('Received offer from streamer');
+        
+        try {
+          // Clean up previous connection if exists
+          if (peer.current) {
+            peer.current.close();
+          }
+          
+          // Create new peer connection
+          peer.current = new RTCPeerConnection({
+            iceServers: [
+              { urls: 'stun:stun.l.google.com:19302' }
+            ]
+          });
+
+          // Handle remote stream
+          peer.current.ontrack = (event) => {
+            console.log('Received remote stream tracks');
+            if (remoteVideoRef.current && !remoteVideoRef.current.srcObject) {
+              remoteVideoRef.current.srcObject = event.streams[0];
+              setLiveStatus(true);
+            }
+          };
+
+          // Set remote description
+          await peer.current.setRemoteDescription(new RTCSessionDescription(sdp));
+          
+          // Create and send answer
+          const answer = await peer.current.createAnswer();
+          await peer.current.setLocalDescription(answer);
+
+          socket.emit('signal', {
+            to: from,
+            from: user._id,
+            type: 'answer',
+            sdp: answer
+          });
+        } catch (err) {
+          console.error('Error handling offer:', err);
+        } finally {
+          processingOffer.current = false;
+        }
+      }
+
+      if (type === 'candidate' && candidate && peer.current) {
+        try {
+          await peer.current.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (err) {
+          console.error('Error adding ICE candidate:', err);
+        }
+      }
     };
-  };
+
+    const handleViewerCount = (count) => {
+      setViewerCount(count);
+    };
+
+    const handleNewComment = (comment) => {
+      setComments(prev => [...prev, comment]);
+    };
+
+    const handleStreamEnded = () => {
+      toast.info('The stream has ended');
+      setLiveStatus(false);
+      setStreamEnded(true);
+      if (peer.current) {
+        peer.current.close();
+        peer.current = null;
+      }
+    };
+
+    socket.on('signal', handleSignal);
+    socket.on('viewer-count', handleViewerCount);
+    socket.on('new-comment', handleNewComment);
+    socket.on('stream-ended', handleStreamEnded);
+
+    // Cleanup
+    return () => {
+      socket.off('signal', handleSignal);
+      socket.off('viewer-count', handleViewerCount);
+      socket.off('new-comment', handleNewComment);
+      socket.off('stream-ended', handleStreamEnded);
+      
+      if (peer.current) {
+        peer.current.close();
+      }
+    };
+  }, [isSocketReady, user, streamerId]);
 
   // Handle sending comments
   const handleSendComment = (e) => {
-
     e.preventDefault();
     if (!newComment.trim()) return;
     
@@ -82,127 +171,10 @@ const LiveViewerPage = () => {
       comment: newComment,
       timestamp: new Date().toLocaleTimeString()
     };
-    console.log('sending ')
+    
     socket.emit('send-comment', comment);
-
     setNewComment('');
   };
-
-  // Scroll chat to bottom when new comments arrive
-  useEffect(() => {
-    chatContainerRef.current?.scrollTo({
-      top: chatContainerRef.current.scrollHeight,
-      behavior: 'smooth'
-    });
-  }, [comments]);
-
-  // Main WebRTC and socket logic
-  useEffect(() => {
-    if (!isSocketReady) {
-      console.log('Waiting for socket connection...');
-      return;
-    }
-    if (!user || !streamerId) return;
-
-    // Fetch streamer info
-    fetchStreamerInfo().then(info => setStreamerInfo(info));
-
-    // Create peer connection
-    peer.current = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' }
-      ]
-    });
-
-    // Handle remote stream
-    peer.current.ontrack = (event) => {
-      console.log('Received remote stream');
-      remoteVideoRef.current.srcObject = event.streams[0];
-      setLiveStatus(true);
-    };
-
-    // Handle ICE Candidates
-    peer.current.onicecandidate = (event) => {
-      if (event.candidate) {
-        socket.emit('signal', {
-          to: streamerId,
-          from: user._id,
-          type: 'candidate',
-          candidate: event.candidate,
-        });
-      }
-    };
-
-    // Join stream
-    console.log('Joining stream as viewer...');
-    socket.emit('viewer-join', {
-      from: user._id,
-      to: streamerId
-    });
-
-    // Socket event listeners
-    socket.on('viewer-count', (count) => {
-      setViewerCount(count);
-    });
-
-    socket.on('new-comment', (comment) => {
-        console.log('comment was added')
-      setComments(prev => [...prev, comment]);
-    });
-
-    socket.on('stream-ended', () => {
-      toast.info('The stream has ended');
-      setLiveStatus(false);
-    });
-
-    socket.on('signal', async ({ from, type, sdp, candidate }) => {
-      if (type === 'offer') {
-        console.log('Received offer from streamer');
-        try {
-          await peer.current.setRemoteDescription(new RTCSessionDescription(sdp));
-          const answer = await peer.current.createAnswer();
-          await peer.current.setLocalDescription(answer);
-
-          socket.emit('signal', {
-            to: from,
-            from: user._id,
-            type: 'answer',
-            sdp: peer.current.localDescription,
-          });
-        } catch (err) {
-          console.error('Error handling offer:', err);
-        }
-      }
-
-      if (type === 'candidate' && candidate) {
-        console.log('Received ICE candidate');
-        try {
-          await peer.current.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (err) {
-          console.error('Error adding ICE candidate:', err);
-        }
-      }
-    });
-
-    socket.on('stream-ended', ({streamerId})=>{
-        console.log('stream ended trigged')
-        setStreamEnded(true);
-    })
-
-    // Cleanup
-    return () => {
-      peer.current?.close();
-      socket.off('signal');
-      socket.off('viewer-count');
-      socket.off('new-comment');
-      socket.off('stream-ended');
-      
-      // Stop local media tracks
-      if (localVideoRef.current?.srcObject) {
-        localVideoRef.current.srcObject.getTracks().forEach(track => track.stop());
-      }
-    };
-  }, [isSocketReady, user, streamerId]);
 
   // Toggle mute
   const toggleMute = () => {

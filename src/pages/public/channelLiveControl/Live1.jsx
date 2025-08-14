@@ -1,3 +1,6 @@
+
+
+
 import React, { useRef, useState, useEffect } from 'react';
 import { getSocket } from '../../../socket/socket';
 import { toast } from 'react-toastify';
@@ -8,17 +11,15 @@ const LiveStreamerPage = () => {
   const [liveStatus, setLiveStatus] = useState(false);
   const [viewerCount, setViewerCount] = useState(0);
   const [isSocketReady, setIsSocketReady] = useState(false);
-  const [comment, setComment] = useState([]);
+  const [comments, setComments] = useState([]);
 
   const streamRef = useRef(null);
   const videoRef = useRef();
   const previewRef = useRef();
-  const peerConnections = useRef({}); // Store all peer connections
+  const peerConnections = useRef({});
   const { user } = useAuth();
   const navigate = useNavigate();
   const socket = getSocket();
-
-  console.log(peerConnections,'peer connections');
 
   // Authentication check
   useEffect(() => {
@@ -35,7 +36,6 @@ const LiveStreamerPage = () => {
     setIsSocketReady(true);
 
     return () => {
-      // Cleanup all peer connections
       Object.values(peerConnections.current).forEach(peer => peer.close());
     };
   }, [socket]);
@@ -57,7 +57,6 @@ const LiveStreamerPage = () => {
         previewRef.current.muted = true;
       }
 
-      // Notify server streaming started
       socket.emit('stream-started', {
         streamerId: user._id,
         title: `${user.username}'s Live Stream`
@@ -71,15 +70,16 @@ const LiveStreamerPage = () => {
 
   // Handle viewer connections
   useEffect(() => {
-    if (!isSocketReady || !streamRef.current)  return console.log(isSocketReady ?'socket not ready ' : 'streamRef.current not ready', streamRef);
+    if (!isSocketReady || !streamRef.current) return;
 
-    console.log('all ready and working well')
+    const handleViewerJoin = async (viewerId) => {
+      if (peerConnections.current[viewerId]) {
+        console.log(`Already connected to viewer ${viewerId}`);
+        return;
+      }
 
-    // New viewer wants to join
-    socket.on('viewer-join', async (viewerId) => {
       console.log(`New viewer joining: ${viewerId}`);
-
-      // Create new peer connection
+      
       const peer = new RTCPeerConnection({
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
@@ -91,11 +91,10 @@ const LiveStreamerPage = () => {
         ]
       });
       
-      // Store the connection
       peerConnections.current[viewerId] = peer;
-      setViewerCount(prev=> prev+1);
+      setViewerCount(prev => prev + 1);
 
-      // Add all tracks to the connection
+      // Add tracks to connection
       streamRef.current.getTracks().forEach(track => {
         peer.addTrack(track, streamRef.current);
       });
@@ -112,6 +111,16 @@ const LiveStreamerPage = () => {
         }
       };
 
+      // Connection state monitoring
+      peer.onconnectionstatechange = () => {
+        console.log(`Connection with ${viewerId}: ${peer.connectionState}`);
+        if (peer.connectionState === 'disconnected' || peer.connectionState === 'failed') {
+          peer.close();
+          delete peerConnections.current[viewerId];
+          setViewerCount(prev => prev - 1);
+        }
+      };
+
       // Create offer
       try {
         const offer = await peer.createOffer();
@@ -125,37 +134,23 @@ const LiveStreamerPage = () => {
         });
       } catch (err) {
         console.error('Error creating offer:', err);
+        delete peerConnections.current[viewerId];
+        peer.close();
       }
-    });
+    };
 
-    // Viewer left
-    socket.on('viewer-left', (viewerId) => {
+    const handleViewerLeft = (viewerId) => {
       if (peerConnections.current[viewerId]) {
         peerConnections.current[viewerId].close();
         delete peerConnections.current[viewerId];
         setViewerCount(prev => prev - 1);
       }
-    });
+    };
 
-    // Update viewer count
-    socket.on('viewer-count', (count) => {
-      setViewerCount(count);
-    });
-
-    // handle comment adding
-    socket.on("add-comment", (comment)=>{
-        console.log('comment is adding...')
-        setComment(comment)
-        socket.emit('add-comment', {...comment, viewers: Object.keys(peerConnections.current)})
-    })
-
-
-    // Handle answers from viewers
-    socket.on('signal', async ({ from, type, sdp }) => {
+    const handleSignal = async ({ from, type, sdp }) => {
       if (type === 'answer') {
-          const peer = peerConnections.current[from];
-          console.log(sdp,' sdp ', peer," peer")
-        if (peer) {
+        const peer = peerConnections.current[from];
+        if (peer && peer.signalingState !== 'stable') {
           try {
             await peer.setRemoteDescription(new RTCSessionDescription(sdp));
           } catch (err) {
@@ -163,26 +158,35 @@ const LiveStreamerPage = () => {
           }
         }
       }
-    });
+    };
+
+    const handleAddComment = (comment) => {
+      setComments(prev => [...prev, comment]);
+      socket.emit('add-comment', {...comment, viewers: Object.keys(peerConnections.current)});
+    };
+
+    socket.on('viewer-join', handleViewerJoin);
+    socket.on('viewer-left', handleViewerLeft);
+    socket.on('signal', handleSignal);
+    socket.on('add-comment', handleAddComment);
 
     return () => {
-      socket.off('viewer-join');
-      socket.off('viewer-left');
-      socket.off('viewer-count');
-      socket.off('signal');
+      socket.off('viewer-join', handleViewerJoin);
+      socket.off('viewer-left', handleViewerLeft);
+      socket.off('signal', handleSignal);
+      socket.off('add-comment', handleAddComment);
     };
-  }, [isSocketReady, user, streamRef.current]);
+  }, [isSocketReady, user._id]);
 
   // Stop streaming
   const stopLive = () => {
     setLiveStatus(false);
     setViewerCount(0);
     let viewers = Object.keys(peerConnections.current);
-    // Close all peer connections
+    
     Object.values(peerConnections.current).forEach(peer => peer.close());
     peerConnections.current = {};
 
-    // Stop media tracks
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
@@ -191,8 +195,7 @@ const LiveStreamerPage = () => {
     if (videoRef.current) videoRef.current.srcObject = null;
     if (previewRef.current) previewRef.current.srcObject = null;
 
-    // Notify server
-    socket.emit('stream-ended', { streamerId: user._id , viewers});
+    socket.emit('stream-ended', { streamerId: user._id, viewers });
   };
 
   return (
